@@ -2,3 +2,6 @@ google-genai>=2.31.0
 pydantic>=2.14.0
 pytest>=8.0.0
 pytest-asyncio>=1.4.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+python-multipart>=0.0.9
