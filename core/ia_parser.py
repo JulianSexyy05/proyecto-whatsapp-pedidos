@@ -4,12 +4,19 @@ Implementado con el SDK oficial Google GenAI (`google-genai`).
 """
 
 import os
+import sys
 import json
 import asyncio
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 
 # =====================================================================
