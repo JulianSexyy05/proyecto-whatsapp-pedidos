@@ -1,2 +1,4 @@
 google-genai>=2.31.0
 pydantic>=2.14.0
+pytest>=8.0.0
+pytest-asyncio>=1.4.0
