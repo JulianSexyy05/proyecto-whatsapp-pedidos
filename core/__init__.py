@@ -6,10 +6,12 @@ máquina de estados de conversación y recuperación de faltantes.
 
 from core.ia_parser import (
     extraer_pedido_whatsapp,
+    extraer_pedido_whatsapp_sync,
     ExtraccionPedido,
     ItemProducto,
     GeminiParserError,
 )
+
 from core.cotizador import (
     cotizar_pedido,
     formatear_pesos,
@@ -45,10 +47,12 @@ from core.conversation_state import (
 __all__ = [
     # ia_parser
     "extraer_pedido_whatsapp",
+    "extraer_pedido_whatsapp_sync",
     "ExtraccionPedido",
     "ItemProducto",
     "GeminiParserError",
     # cotizador
+
     "cotizar_pedido",
     "formatear_pesos",
     "ResumenCotizacion",

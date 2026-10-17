@@ -153,6 +153,22 @@ async def extraer_pedido_whatsapp(
         raise GeminiParserError(f"Fallo en Gemini API durante la extracción: {err}") from err
 
 
+def extraer_pedido_whatsapp_sync(
+    chat_text: str,
+    client: Optional[genai.Client] = None,
+    api_key: Optional[str] = None
+) -> ExtraccionPedido:
+    """Wrapper síncrono para extraer_pedido_whatsapp."""
+    return asyncio.run(
+        extraer_pedido_whatsapp(
+            chat_text=chat_text,
+            client=client,
+            api_key=api_key
+        )
+    )
+
+
+
 
 # =====================================================================
 # 4. Bloque de Ejecución Directa para Pruebas

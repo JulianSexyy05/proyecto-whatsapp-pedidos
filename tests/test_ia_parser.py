@@ -67,6 +67,20 @@ class TestExtraccionPedido(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(GeminiParserError):
             await extraer_pedido_whatsapp("Hola", client=mock_client)
 
+    def test_extraer_pedido_whatsapp_sync(self):
+        from core.ia_parser import extraer_pedido_whatsapp_sync
+        mock_response = MagicMock()
+        mock_response.text = '{"nombre_cliente": "Sara", "productos": [{"nombre": "pizza", "cantidad": 1}], "direccion_entrega": "Calle 1", "metodo_pago": "Nequi", "confianza_extraccion": 0.99}'
+
+        mock_generate_content = AsyncMock(return_value=mock_response)
+        mock_client = MagicMock()
+        mock_client.aio.models.generate_content = mock_generate_content
+
+        resultado = extraer_pedido_whatsapp_sync("Quiero 1 pizza", client=mock_client)
+        self.assertEqual(resultado.nombre_cliente, "Sara")
+        self.assertEqual(len(resultado.productos), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+
