@@ -6,6 +6,8 @@ a medida que llegan nuevos mensajes extraídos por ia_parser.py.
 
 import sys
 import os
+import uuid
+from datetime import datetime
 from enum import Enum
 from typing import List, Optional, Dict, Tuple
 from pydantic import BaseModel, Field
@@ -142,10 +144,92 @@ class SesionPedido(BaseModel):
 
         return self.estado, respuesta
 
+    def generar_orden_socio2(self) -> "OrdenSocio2":
+        """
+        Genera el payload consolidado y validado de la orden en el esquema
+        estructurado requerido para el backend/base de datos del Socio 2.
+        """
+        if self.estado != EstadoFlujo.COMPLETADO:
+            raise ValueError(
+                f"No se puede generar la orden para Socio 2 porque la sesión está en estado '{self.estado.value}'. "
+                "Debe estar en estado 'COMPLETADO'."
+            )
+
+        items_socio = []
+        if self.resumen_cotizacion and self.resumen_cotizacion.items:
+            for item in self.resumen_cotizacion.items:
+                items_socio.append(
+                    ItemOrdenSocio2(
+                        nombre=item.producto_catalogo,
+                        cantidad=item.cantidad,
+                        precio_unitario=item.precio_unitario,
+                        subtotal=item.subtotal
+                    )
+                )
+        else:
+            for p in self.productos:
+                items_socio.append(
+                    ItemOrdenSocio2(
+                        nombre=p.nombre,
+                        cantidad=p.cantidad,
+                        precio_unitario=0.0,
+                        subtotal=0.0
+                    )
+                )
+
+        subtotal = self.resumen_cotizacion.subtotal_productos if self.resumen_cotizacion else 0.0
+        envio = self.resumen_cotizacion.costo_envio if self.resumen_cotizacion else 0.0
+        total = self.resumen_cotizacion.total_a_pagar if self.resumen_cotizacion else 0.0
+
+        return OrdenSocio2(
+            id_orden=f"ORD-{uuid.uuid4().hex[:8].upper()}",
+            chat_id=self.chat_id,
+            fecha_confirmacion=datetime.now().isoformat(),
+            estado_orden="CONFIRMADA_COCINA",
+            cliente=self.nombre_cliente or "Cliente WhatsApp",
+            direccion_entrega=self.direccion_entrega or "Por definir",
+            metodo_pago=self.metodo_pago or "No especificado",
+            productos=items_socio,
+            subtotal_productos=subtotal,
+            costo_envio=envio,
+            total_a_pagar=total,
+            total_unidades=sum(i.cantidad for i in items_socio),
+            mensaje_confirmacion_cliente=(
+                f"🎉 ¡Tu pedido ha sido confirmado con éxito!\n"
+                f"• Productos: {sum(i.cantidad for i in items_socio)} unidades\n"
+                f"• Dirección: {self.direccion_entrega}\n"
+                f"• Método de pago: {self.metodo_pago}\n"
+                f"• Total a pagar: {formatear_pesos(total)}"
+            )
+        )
+
 
 # =====================================================================
-# 3. Gestor de Sesiones de Conversación (Multi-Chat)
+# 3. Esquema Estructurado de Orden para Socio 2
 # =====================================================================
+
+class ItemOrdenSocio2(BaseModel):
+    nombre: str = Field(description="Nombre del producto en catálogo")
+    cantidad: int = Field(description="Unidades ordenadas", ge=1)
+    precio_unitario: float = Field(description="Precio unitario")
+    subtotal: float = Field(description="Subtotal de la línea de producto")
+
+
+class OrdenSocio2(BaseModel):
+    id_orden: str = Field(description="Identificador único para trazabilidad y cocina")
+    chat_id: str = Field(description="Número de WhatsApp o identificador del cliente")
+    fecha_confirmacion: str = Field(description="Marca de tiempo ISO de confirmación del pedido")
+    estado_orden: str = Field(default="CONFIRMADA_COCINA", description="Estado operativo de la orden")
+    cliente: str = Field(description="Nombre completo del cliente")
+    direccion_entrega: str = Field(description="Dirección física completa para despacho")
+    metodo_pago: str = Field(description="Método de pago confirmado")
+    productos: List[ItemOrdenSocio2] = Field(description="Lista detallada de productos")
+    subtotal_productos: float = Field(description="Subtotal de los productos")
+    costo_envio: float = Field(description="Costo de transporte a domicilio")
+    total_a_pagar: float = Field(description="Total liquidado a pagar")
+    total_unidades: int = Field(description="Total de unidades ordenadas")
+    mensaje_confirmacion_cliente: str = Field(description="Resumen de confirmación emitido hacia el cliente")
+
 
 class GestorConversaciones:
     """
