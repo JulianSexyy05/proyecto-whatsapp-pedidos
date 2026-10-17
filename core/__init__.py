@@ -28,8 +28,11 @@ from core.fallback_handler import (
     evaluar_necesidad_fallback,
     generar_mensaje_fallback,
     generar_mensaje_fallback_sync,
+    generar_respuesta_fallback,
+    generar_respuesta_fallback_sync,
     ResultadoFallback,
 )
+
 from core.conversation_state import (
     EstadoFlujo,
     SesionPedido,
@@ -61,8 +64,11 @@ __all__ = [
     "evaluar_necesidad_fallback",
     "generar_mensaje_fallback",
     "generar_mensaje_fallback_sync",
+    "generar_respuesta_fallback",
+    "generar_respuesta_fallback_sync",
     "ResultadoFallback",
     # conversation_state
+
     "EstadoFlujo",
     "SesionPedido",
     "GestorConversaciones",
