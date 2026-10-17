@@ -3,10 +3,17 @@ Pruebas unitarias para core/ia_parser.py
 """
 
 import unittest
-from core.ia_parser import ExtraccionPedido, ItemProducto
+from unittest.mock import AsyncMock, MagicMock
+from core.ia_parser import (
+    ExtraccionPedido,
+    ItemProducto,
+    GeminiParserError,
+    _limpiar_json_markdown,
+    extraer_pedido_whatsapp
+)
 
 
-class TestExtraccionPedido(unittest.TestCase):
+class TestExtraccionPedido(unittest.IsolatedAsyncioTestCase):
 
     def test_schema_validation_valid(self):
         data = {
@@ -34,6 +41,31 @@ class TestExtraccionPedido(unittest.TestCase):
         self.assertIsNone(pedido.direccion_entrega)
         self.assertIsNone(pedido.metodo_pago)
         self.assertEqual(pedido.confianza_extraccion, 1.0)
+
+    def test_limpiar_json_markdown(self):
+        con_bloque = "```json\n{\"cliente\": \"Juan\"}\n```"
+        sin_bloque = "{\"cliente\": \"Juan\"}"
+        self.assertEqual(_limpiar_json_markdown(con_bloque), sin_bloque)
+        self.assertEqual(_limpiar_json_markdown(sin_bloque), sin_bloque)
+
+    async def test_respuesta_vacia_levanta_gemini_parser_error(self):
+        mock_response = MagicMock()
+        mock_response.text = ""
+
+        mock_generate_content = AsyncMock(return_value=mock_response)
+        mock_client = MagicMock()
+        mock_client.aio.models.generate_content = mock_generate_content
+
+        with self.assertRaises(GeminiParserError):
+            await extraer_pedido_whatsapp("Hola", client=mock_client)
+
+    async def test_error_api_levanta_gemini_parser_error(self):
+        mock_generate_content = AsyncMock(side_effect=RuntimeError("Connection timeout"))
+        mock_client = MagicMock()
+        mock_client.aio.models.generate_content = mock_generate_content
+
+        with self.assertRaises(GeminiParserError):
+            await extraer_pedido_whatsapp("Hola", client=mock_client)
 
 
 if __name__ == "__main__":

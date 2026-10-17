@@ -10,13 +10,31 @@ import asyncio
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from google import genai
-from google.genai import types
+from google.genai import types, errors
 
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
+
+
+class GeminiParserError(Exception):
+    """Excepción generada ante fallos en la invocación o validación de Gemini API."""
+    pass
+
+
+def _limpiar_json_markdown(texto: str) -> str:
+    """Elimina delimitadores markdown ```json y ``` si están presentes en la respuesta."""
+    limpio = texto.strip()
+    if limpio.startswith("```json"):
+        limpio = limpio[7:]
+    elif limpio.startswith("```"):
+        limpio = limpio[3:]
+    if limpio.endswith("```"):
+        limpio = limpio[:-3]
+    return limpio.strip()
+
 
 
 # =====================================================================
@@ -112,15 +130,28 @@ async def extraer_pedido_whatsapp(
         temperature=0.1,  # Baja temperatura para consistencia determinista
     )
 
-    # Invocación asíncrona con el modelo gemini-2.5-flash
-    response = await client.aio.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=chat_text,
-        config=config,
-    )
+    try:
+        # Invocación asíncrona con el modelo gemini-2.5-flash
+        response = await client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=chat_text,
+            config=config,
+        )
 
-    # Validación y parsing estricto a través de Pydantic
-    return ExtraccionPedido.model_validate_json(response.text)
+        if not response.text or not response.text.strip():
+            raise GeminiParserError(
+                "La API de Gemini devolvió una respuesta vacía o fue bloqueada por filtros de contenido."
+            )
+
+        # Limpieza de markdown y validación estricta con Pydantic
+        texto_limpio = _limpiar_json_markdown(response.text)
+        return ExtraccionPedido.model_validate_json(texto_limpio)
+
+    except (errors.APIError, Exception) as err:
+        if isinstance(err, (ValueError, GeminiParserError)):
+            raise
+        raise GeminiParserError(f"Fallo en Gemini API durante la extracción: {err}") from err
+
 
 
 # =====================================================================

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional, Union
 from pydantic import BaseModel, Field
 from google import genai
-from google.genai import types
+from google.genai import types, errors
 
 # Configuración de encoding para consola Windows
 if sys.platform == "win32":
@@ -22,6 +22,24 @@ if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
+
+
+class GeminiOCRError(Exception):
+    """Excepción personalizada para errores en el procesamiento de OCR con Gemini API."""
+    pass
+
+
+def _limpiar_json_markdown(texto: str) -> str:
+    """Elimina delimitadores markdown ```json y ``` si están presentes en la respuesta."""
+    limpio = texto.strip()
+    if limpio.startswith("```json"):
+        limpio = limpio[7:]
+    elif limpio.startswith("```"):
+        limpio = limpio[3:]
+    if limpio.endswith("```"):
+        limpio = limpio[:-3]
+    return limpio.strip()
+
 
 
 # =====================================================================
@@ -185,15 +203,28 @@ async def procesar_comprobante_pago(
         "referencia y autenticidad visual. Extrae el resultado en el esquema JSON solicitado."
     )
 
-    # Invocación asíncrona a Gemini 2.5 Flash
-    response = await client.aio.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[part_imagen, prompt],
-        config=config,
-    )
+    try:
+        # Invocación asíncrona a Gemini 2.5 Flash
+        response = await client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[part_imagen, prompt],
+            config=config,
+        )
 
-    # Validación y conversión a modelo Pydantic
-    return ComprobantePago.model_validate_json(response.text)
+        if not response.text or not response.text.strip():
+            raise GeminiOCRError(
+                "La API de Gemini devolvió una respuesta vacía o la imagen no pudo ser procesada."
+            )
+
+        # Validación y conversión a modelo Pydantic
+        texto_limpio = _limpiar_json_markdown(response.text)
+        return ComprobantePago.model_validate_json(texto_limpio)
+
+    except (errors.APIError, Exception) as err:
+        if isinstance(err, (FileNotFoundError, TypeError, ValueError, GeminiOCRError)):
+            raise
+        raise GeminiOCRError(f"Fallo en Gemini API durante el OCR del comprobante: {err}") from err
+
 
 
 def procesar_comprobante_pago_sync(

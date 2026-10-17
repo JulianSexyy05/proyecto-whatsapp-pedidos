@@ -11,7 +11,8 @@ import asyncio
 from typing import List, Optional, Tuple
 from pydantic import BaseModel, Field
 from google import genai
-from google.genai import types
+from google.genai import types, errors
+
 
 # Compatibilidad de importación
 try:
@@ -229,18 +230,20 @@ async def generar_mensaje_fallback(
                 )
             )
 
-            mensaje_ia = response.text.strip()
-            return ResultadoFallback(
-                necesita_fallback=True,
-                motivo=f"Falta {campo_prioritario}" if campo_prioritario != "aclaracion" else "Baja confianza de extracción",
-                campo_prioritario=campo_prioritario,
-                campos_faltantes=faltantes,
-                mensaje_whatsapp=mensaje_ia,
-                generado_por_ia=True
-            )
-        except Exception:
-            # Fallback seguro a plantilla si la llamada falla
+            if response.text and response.text.strip():
+                mensaje_ia = response.text.strip()
+                return ResultadoFallback(
+                    necesita_fallback=True,
+                    motivo=f"Falta {campo_prioritario}" if campo_prioritario != "aclaracion" else "Baja confianza de extracción",
+                    campo_prioritario=campo_prioritario,
+                    campos_faltantes=faltantes,
+                    mensaje_whatsapp=mensaje_ia,
+                    generado_por_ia=True
+                )
+        except (errors.APIError, Exception):
+            # Fallback seguro y transparente a plantilla si la llamada a Gemini falla o devuelve vacío
             pass
+
 
     # Generación determinista si no hay conexión o no hay API Key
     mensaje_plantilla = _generar_mensaje_plantilla(campo_prioritario, extraccion)

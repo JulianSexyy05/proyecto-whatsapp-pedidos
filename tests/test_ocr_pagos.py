@@ -90,6 +90,30 @@ class TestOCRPagos(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(FileNotFoundError):
             await procesar_comprobante_pago("ruta/inexistente/no_existe.png")
 
+    async def test_respuesta_vacia_levanta_gemini_ocr_error(self):
+        from core.ocr_pagos import GeminiOCRError
+        mock_response = MagicMock()
+        mock_response.text = ""
+
+        mock_generate_content = AsyncMock(return_value=mock_response)
+        mock_client = MagicMock()
+        mock_client.aio.models.generate_content = mock_generate_content
+
+        fake_image_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
+        with self.assertRaises(GeminiOCRError):
+            await procesar_comprobante_pago(fake_image_bytes, client=mock_client)
+
+    async def test_error_api_levanta_gemini_ocr_error(self):
+        from core.ocr_pagos import GeminiOCRError
+        mock_generate_content = AsyncMock(side_effect=RuntimeError("Google GenAI Server Error"))
+        mock_client = MagicMock()
+        mock_client.aio.models.generate_content = mock_generate_content
+
+        fake_image_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
+        with self.assertRaises(GeminiOCRError):
+            await procesar_comprobante_pago(fake_image_bytes, client=mock_client)
+
 
 if __name__ == "__main__":
     unittest.main()
+

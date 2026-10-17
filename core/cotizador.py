@@ -7,8 +7,9 @@ formateados específicamente para WhatsApp.
 import unicodedata
 import sys
 import os
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, Tuple
 from pydantic import BaseModel, Field
+
 
 try:
     from core.ia_parser import ItemProducto, ExtraccionPedido
@@ -107,7 +108,8 @@ def _normalizar_texto(texto: str) -> str:
 def _buscar_en_catalogo(
     nombre_item: str,
     catalogo: Dict[str, float]
-) -> Optional[tuple[str, float]]:
+) -> Optional[Tuple[str, float]]:
+
     """
     Busca un producto en el catálogo utilizando coincidencia exacta, parcial o de palabras clave.
     """
