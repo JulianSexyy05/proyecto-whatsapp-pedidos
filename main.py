@@ -4,11 +4,14 @@ import os
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
 
+from integrations.gemini import ask_gemini
+from integrations.whatsapp import mark_message_as_read, send_whatsapp_message
+
 # Cargar variables de entorno desde el archivo .env
-load_dotenv()
+load_dotenv(override=True)
 
 # Configuración de Logging
 logging.basicConfig(
@@ -17,14 +20,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger("whatsapp-backend")
 
-# Token de verificación configurado para Meta Webhook
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "mi_token_secreto_whatsapp")
-
 app = FastAPI(
     title="WhatsApp Orders API",
-    description="Servidor backend para gestión de pedidos y mensajería con WhatsApp Business Cloud API.",
+    description="Servidor backend para gestión de pedidos y mensajería con WhatsApp Business Cloud API e Inteligencia Artificial Gemini.",
     version="1.0.0",
 )
+
+
+def handle_incoming_message_with_gemini(sender: str, text_body: str, msg_id: Optional[str] = None):
+    """
+    Tarea en segundo plano:
+    1. Marca el mensaje como leído en WhatsApp (doble check azul).
+    2. Envía el texto recibido a Gemini API con GEMINI_API_KEY.
+    3. Reenvía la respuesta generada por Gemini al remitente vía WhatsApp Graph API.
+    """
+    if msg_id:
+        mark_message_as_read(msg_id)
+
+    # 1. Enviar consulta a la API oficial de Gemini
+    logger.info("Enviando consulta a Gemini AI para %s...", sender)
+    gemini_reply = ask_gemini(prompt=text_body)
+
+    # 2. Reenviar la respuesta generada a la API de WhatsApp
+    logger.info("Reenviando respuesta de Gemini a WhatsApp (%s)...", sender)
+    api_response = send_whatsapp_message(to=sender, text=gemini_reply)
+    if api_response:
+        logger.info("Mensaje de Gemini entregado exitosamente a WhatsApp (%s).", sender)
+    else:
+        logger.error("Fallo al entregar el mensaje de WhatsApp a %s.", sender)
 
 
 @app.get("/", summary="Health Check", tags=["General"])
@@ -52,14 +75,17 @@ def verify_webhook(
     - hub.verify_token: Token secreto configurado en el panel de Meta.
     - hub.challenge: Cadena alfanumérica que se debe retornar tal cual en texto plano.
     """
-    if not VERIFY_TOKEN:
+    load_dotenv(override=True)
+    verify_token = os.getenv("VERIFY_TOKEN", "")
+
+    if not verify_token:
         logger.error("VERIFY_TOKEN no está definido en el entorno.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="VERIFY_TOKEN no está configurado en el servidor",
         )
 
-    if hub_mode == "subscribe" and hub_verify_token == VERIFY_TOKEN:
+    if hub_mode == "subscribe" and hub_verify_token == verify_token:
         logger.info("Verificación exitosa del Webhook de WhatsApp.")
         return PlainTextResponse(content=hub_challenge or "", status_code=status.HTTP_200_OK)
 
@@ -77,14 +103,16 @@ def verify_webhook(
 @app.post(
     "/webhook/whatsapp",
     status_code=status.HTTP_200_OK,
-    summary="Recepción de eventos de WhatsApp Business",
+    summary="Recepción de eventos de WhatsApp Business y respuesta con Gemini",
     tags=["WhatsApp Webhook"],
 )
-async def receive_webhook(request: Request):
+async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     """
-    Endpoint para recibir eventos y mensajes entrantes de WhatsApp en formato JSON.
-    Imprime en consola el contenido recibido y retorna HTTP 200 inmediatamente
-    para evitar reintentos automáticos de Meta.
+    Endpoint para recibir eventos y mensajes entrantes de WhatsApp en formato JSON:
+    1. Extrae el número del usuario (from) y el texto (text.body).
+    2. Envía la consulta a Gemini AI en segundo plano.
+    3. Reenvía la respuesta a WhatsApp Graph API.
+    4. Retorna HTTP 200 inmediatamente a Meta para evitar timeouts.
     """
     try:
         payload = await request.json()
@@ -92,35 +120,68 @@ async def receive_webhook(request: Request):
         logger.error("Error al procesar el cuerpo JSON de la petición: %s", exc)
         return {"status": "error", "message": "JSON inválido"}
 
-    # Imprimir en consola con formato JSON legible
-    print("\n" + "=" * 60)
-    print("📩 [WHATSAPP WEBHOOK] Mensaje/Evento entrante recibido:")
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
-    print("=" * 60 + "\n")
-
-    # Registro y parsing de alto nivel del mensaje
     try:
         entries = payload.get("entry", [])
         for entry in entries:
             for change in entry.get("changes", []):
-                val = change.get("value", {})
-                messages = val.get("messages", [])
-                for msg in messages:
-                    sender = msg.get("from")
-                    msg_type = msg.get("type")
-                    text_content = (
-                        msg.get("text", {}).get("body") if msg_type == "text" else None
-                    )
-                    logger.info(
-                        "Mensaje recibido de: %s | Tipo: %s | Contenido: %s",
-                        sender,
-                        msg_type,
-                        text_content,
-                    )
-    except Exception as err:
-        logger.warning("Error extrayendo datos del payload de WhatsApp: %s", err)
+                value = change.get("value", {})
+                
+                # Mapeo de nombres de contactos
+                contacts = {
+                    c.get("wa_id"): c.get("profile", {}).get("name")
+                    for c in value.get("contacts", [])
+                }
 
-    # Meta requiere responder 200 OK rápidamente
+                messages = value.get("messages", [])
+                for msg in messages:
+                    sender = msg.get("from")  # Número de teléfono del usuario
+                    msg_id = msg.get("id")
+                    msg_type = msg.get("type")
+                    sender_name = contacts.get(sender, "Cliente")
+                    
+                    text_body = ""
+                    if msg_type == "text":
+                        text_body = msg.get("text", {}).get("body", "")
+                    elif msg_type == "interactive":
+                        interactive = msg.get("interactive", {})
+                        text_body = (
+                            interactive.get("button_reply", {}).get("title")
+                            or interactive.get("list_reply", {}).get("title", "")
+                        )
+                    else:
+                        text_body = f"[{msg_type.upper()}]"
+
+                    # 1. Impresión visual destacada en consola
+                    print("\n" + "=" * 60)
+                    print("📩 [WHATSAPP WEBHOOK] Mensaje recibido:")
+                    print(f"👤 Remitente : {sender_name} ({sender})")
+                    print(f"💬 Texto      : {text_body}")
+                    print(f"🆔 Message ID : {msg_id}")
+                    print(f"📦 Tipo       : {msg_type}")
+                    print("🤖 Procesando respuesta con Gemini AI...")
+                    print("=" * 60 + "\n")
+
+                    logger.info(
+                        "Mensaje procesado -> Remitente: %s (%s) | Texto: %s",
+                        sender_name,
+                        sender,
+                        text_body,
+                    )
+
+                    # 2. Encolar tarea de consulta a Gemini y respuesta a WhatsApp
+                    if sender and text_body:
+                        background_tasks.add_task(
+                            handle_incoming_message_with_gemini,
+                            sender=sender,
+                            text_body=text_body,
+                            msg_id=msg_id,
+                        )
+                        logger.info("Tarea de respuesta con Gemini encolada en segundo plano para %s", sender)
+
+    except Exception as err:
+        logger.warning("Error durante la extracción o procesamiento del mensaje: %s", err)
+
+    # Meta requiere responder 200 OK inmediatamente
     return {"status": "EVENT_RECEIVED"}
 
 
