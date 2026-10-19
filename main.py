@@ -3,6 +3,7 @@ import logging
 import os
 from typing import Optional
 
+import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
@@ -19,6 +20,27 @@ logger = logging.getLogger("whatsapp-backend")
 
 # Token de verificación configurado para Meta Webhook
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "mi_token_secreto_whatsapp")
+
+# Configuración de Gemini
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+gemini_client = None
+if GEMINI_API_KEY:
+    try:
+        from google import genai
+        gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+        logger.info("Cliente Gemini inicializado correctamente (modelo: %s)", GEMINI_MODEL)
+    except Exception as e:
+        logger.error("Error inicializando cliente Gemini: %s", e)
+        gemini_client = None
+else:
+    logger.warning("GEMINI_API_KEY no está configurado. La integración con Gemini no funcionará.")
+
+# Configuración de WhatsApp Business Cloud API
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
+WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID")
+WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
+WHATSAPP_API_URL = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{WHATSAPP_PHONE_ID}/messages" if WHATSAPP_PHONE_ID else None
 
 app = FastAPI(
     title="WhatsApp Orders API",
@@ -74,6 +96,64 @@ def verify_webhook(
     )
 
 
+async def send_whatsapp_message(to: str, text: str) -> dict:
+    """
+    Envía un mensaje de texto a través de la WhatsApp Business Cloud API.
+    """
+    if not WHATSAPP_TOKEN or not WHATSAPP_API_URL:
+        logger.error("WHATSAPP_TOKEN o WHATSAPP_PHONE_ID no están configurados.")
+        return {"error": "Configuración de WhatsApp incompleta"}
+
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "text",
+        "text": {"body": text},
+    }
+
+    try:
+        response = requests.post(WHATSAPP_API_URL, headers=headers, json=payload, timeout=10)
+        response.raise_for_status()
+        logger.info("Mensaje enviado exitosamente a %s: %s", to, response.json())
+        return response.json()
+    except requests.RequestException as e:
+        logger.error("Error enviando mensaje a WhatsApp: %s", e)
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error("Respuesta de error: %s", e.response.text)
+        return {"error": str(e)}
+
+
+async def get_gemini_response(user_message: str) -> str:
+    """
+    Envía el mensaje del usuario a Gemini y retorna la respuesta.
+    """
+    if not gemini_client:
+        return "Lo siento, la integración con Gemini no está configurada correctamente."
+
+    try:
+        # Contexto del sistema para el bot de pedidos
+        system_prompt = (
+            "Eres un asistente virtual para una tienda de comida. "
+            "Responde de forma amable y concisa en español. "
+            "Ayuda al cliente con sus pedidos, consultas del menú, precios y horarios."
+        )
+
+        # Enviar mensaje a Gemini usando el cliente oficial google-genai
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=f"{system_prompt}\n\nUsuario: {user_message}",
+        )
+
+        return response.text.strip() if response.text else "Lo siento, no pude generar una respuesta."
+    except Exception as e:
+        logger.error("Error obteniendo respuesta de Gemini: %s", e)
+        return "Lo siento, hubo un error procesando tu mensaje. Intenta de nuevo más tarde."
+
+
 @app.post(
     "/webhook/whatsapp",
     status_code=status.HTTP_200_OK,
@@ -83,8 +163,7 @@ def verify_webhook(
 async def receive_webhook(request: Request):
     """
     Endpoint para recibir eventos y mensajes entrantes de WhatsApp en formato JSON.
-    Imprime en consola el contenido recibido y retorna HTTP 200 inmediatamente
-    para evitar reintentos automáticos de Meta.
+    Procesa el mensaje, consulta a Gemini y responde al usuario.
     """
     try:
         payload = await request.json()
@@ -92,11 +171,11 @@ async def receive_webhook(request: Request):
         logger.error("Error al procesar el cuerpo JSON de la petición: %s", exc)
         return {"status": "error", "message": "JSON inválido"}
 
-    # Imprimir en consola con formato JSON legible
-    print("\n" + "=" * 60)
-    print("📩 [WHATSAPP WEBHOOK] Mensaje/Evento entrante recibido:")
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
-    print("=" * 60 + "\n")
+    # Registrar el payload completo para depuración
+    logger.info(
+        "Payload entrante:\n%s",
+        json.dumps(payload, indent=2, ensure_ascii=True),
+    )
 
     # Registro y parsing de alto nivel del mensaje
     try:
@@ -117,6 +196,16 @@ async def receive_webhook(request: Request):
                         msg_type,
                         text_content,
                     )
+
+                    # Procesar solo mensajes de texto
+                    if msg_type == "text" and text_content and sender:
+                        # Obtener respuesta de Gemini
+                        logger.info("Enviando mensaje a Gemini: %s", text_content)
+                        gemini_response = await get_gemini_response(text_content)
+                        logger.info("Respuesta de Gemini: %s", gemini_response)
+
+                        # Enviar respuesta por WhatsApp
+                        await send_whatsapp_message(sender, gemini_response)
     except Exception as err:
         logger.warning("Error extrayendo datos del payload de WhatsApp: %s", err)
 
